@@ -1,15 +1,15 @@
 //! Logic for serde-compatible serialization.
 use std::collections::HashMap;
-use std::error;
-use std::fmt;
 use std::iter::once;
 
 use serde::{
     ser::{self, Error as SerdeError},
     Serialize,
 };
+use std::rc::Rc;
 
 use crate::types::{ToAvro, Value};
+use crate::error::Error;
 
 #[derive(Clone, Default)]
 pub struct Serializer {}
@@ -30,31 +30,6 @@ pub struct StructSerializer {
 pub struct VariantStructSerializer {
     variant_index: usize,
     fields: Vec<(String, Value)>,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct Error {
-    message: String,
-}
-
-impl ser::Error for Error {
-    fn custom<T: fmt::Display>(msg: T) -> Self {
-        Error {
-            message: msg.to_string(),
-        }
-    }
-}
-
-impl fmt::Display for Error {
-    fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-        formatter.write_str(error::Error::description(self))
-    }
-}
-
-impl error::Error for Error {
-    fn description(&self) -> &str {
-        &self.message
-    }
 }
 
 impl SeqSerializer {
@@ -415,7 +390,7 @@ impl ser::SerializeStruct for StructSerializer {
     }
 
     fn end(self) -> Result<Self::Ok, Self::Error> {
-        Ok(Value::Record(self.fields))
+        Ok(Value::Record(self.fields.iter().map(|f| (Rc::new(f.0.clone()), f.1.clone())).collect()))
     }
 }
 
@@ -439,7 +414,7 @@ impl ser::SerializeStructVariant for VariantStructSerializer {
     }
 
     fn end(self) -> Result<Self::Ok, Self::Error> {
-        let variant_value = Value::Record(self.fields);
+        let variant_value = Value::Record(self.fields.iter().map(|f| (Rc::new(f.0.clone()), f.1.clone())).collect()); //TODO these clones are probably going to be expensive..
         Ok(Value::Union(self.variant_index, Box::new(variant_value)))
     }
 }
@@ -471,8 +446,8 @@ mod tests {
             b: "foo".to_owned(),
         };
         let expected = Value::Record(vec![
-            ("a".to_owned(), Value::Long(27)),
-            ("b".to_owned(), Value::String("foo".to_owned())),
+            (Rc::new("a".to_owned()), Value::Long(27)),
+            (Rc::new("b".to_owned()), Value::String("foo".to_owned())),
         ]);
 
         assert_eq!(to_value(test).unwrap(), expected);

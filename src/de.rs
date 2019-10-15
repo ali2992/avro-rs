@@ -6,6 +6,7 @@ use std::collections::{
 use std::error::{self, Error as StdError};
 use std::fmt;
 use std::slice::Iter;
+use std::rc::Rc;
 
 use serde::{
     de::{self, DeserializeSeed, Error as SerdeError, Visitor},
@@ -14,31 +15,8 @@ use serde::{
 
 use crate::types::Value;
 use serde::de::IntoDeserializer;
+use crate::error::Error;
 
-#[derive(Clone, Debug, PartialEq)]
-pub struct Error {
-    message: String,
-}
-
-impl de::Error for Error {
-    fn custom<T: fmt::Display>(msg: T) -> Self {
-        Error {
-            message: msg.to_string(),
-        }
-    }
-}
-
-impl fmt::Display for Error {
-    fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-        formatter.write_str(error::Error::description(self))
-    }
-}
-
-impl error::Error for Error {
-    fn description(&self) -> &str {
-        &self.message
-    }
-}
 
 pub struct Deserializer<'de> {
     input: &'de Value,
@@ -54,7 +32,12 @@ struct MapDeserializer<'de> {
 }
 
 struct StructDeserializer<'de> {
-    input: Iter<'de, (String, Value)>,
+    input: Iter<'de, (Rc<String>, Value)>,
+    value: Option<&'de Value>,
+}
+
+struct AliStructDeserializer<'de> {
+    input: Iter<'de, (&'de str, Value)>,
     value: Option<&'de Value>,
 }
 
@@ -89,8 +72,17 @@ impl<'de> MapDeserializer<'de> {
 }
 
 impl<'de> StructDeserializer<'de> {
-    pub fn new(input: &'de [(String, Value)]) -> Self {
+    pub fn new(input: &'de [(Rc<String>, Value)]) -> Self {
         StructDeserializer {
+            input: input.iter(),
+            value: None,
+        }
+    }
+}
+
+impl<'de> AliStructDeserializer<'de> {
+    pub fn new(input: &'de [(&str, Value)]) -> Self {
+        AliStructDeserializer {
             input: input.iter(),
             value: None,
         }
@@ -426,7 +418,7 @@ impl<'a, 'de> de::Deserializer<'de> for &'a mut Deserializer<'de> {
         V: Visitor<'de>,
     {
         match *self.input {
-            Value::String(ref s) => visitor.visit_str(s),
+            Value::String(ref s) => visitor.visit_borrowed_str(s),
             Value::Bytes(ref bytes) | Value::Fixed(_, ref bytes) => ::std::str::from_utf8(bytes)
                 .map_err(|e| Error::custom(e.description()))
                 .and_then(|s| visitor.visit_str(s)),
@@ -439,7 +431,7 @@ impl<'a, 'de> de::Deserializer<'de> for &'a mut Deserializer<'de> {
         V: Visitor<'de>,
     {
         match *self.input {
-            Value::String(ref s) => visitor.visit_string(s.to_owned()),
+            Value::String(ref s) => visitor.visit_borrowed_str(s),
             Value::Bytes(ref bytes) | Value::Fixed(_, ref bytes) => {
                 String::from_utf8(bytes.to_owned())
                     .map_err(|e| Error::custom(e.description()))
@@ -665,8 +657,8 @@ impl<'de> de::MapAccess<'de> for StructDeserializer<'de> {
             Some(item) => {
                 let (ref field, ref value) = *item;
                 self.value = Some(value);
-                seed.deserialize(StringDeserializer {
-                    input: field.clone(),
+                seed.deserialize(BorrowedStringDeserializer {
+                    input: &*field,
                 })
                 .map(Some)
             }
@@ -685,6 +677,37 @@ impl<'de> de::MapAccess<'de> for StructDeserializer<'de> {
     }
 }
 
+impl<'de> de::MapAccess<'de> for AliStructDeserializer<'de> {
+    type Error = Error;
+
+    fn next_key_seed<K>(&mut self, seed: K) -> Result<Option<K::Value>, Self::Error>
+        where
+            K: DeserializeSeed<'de>,
+    {
+        match self.input.next() {
+            Some(item) => {
+                let (ref field, ref value) = *item;
+                self.value = Some(value);
+                seed.deserialize(BorrowedStringDeserializer {
+                    input: field,
+                })
+                    .map(Some)
+            }
+            None => Ok(None),
+        }
+    }
+
+    fn next_value_seed<V>(&mut self, seed: V) -> Result<V::Value, Self::Error>
+        where
+            V: DeserializeSeed<'de>,
+    {
+        match self.value.take() {
+            Some(value) => seed.deserialize(&mut Deserializer::new(value)),
+            None => Err(Error::custom("should not happen - too many values")),
+        }
+    }
+}
+
 struct StringDeserializer {
     input: String,
 }
@@ -693,10 +716,32 @@ impl<'de> de::Deserializer<'de> for StringDeserializer {
     type Error = Error;
 
     fn deserialize_any<V>(self, visitor: V) -> Result<V::Value, Self::Error>
-    where
-        V: Visitor<'de>,
+        where
+            V: Visitor<'de>,
     {
         visitor.visit_string(self.input)
+    }
+
+    forward_to_deserialize_any! {
+        bool u8 u16 u32 u64 i8 i16 i32 i64 f32 f64 char str string unit option
+        seq bytes byte_buf map unit_struct newtype_struct
+        tuple_struct struct tuple enum identifier ignored_any
+    }
+
+}
+
+struct BorrowedStringDeserializer<'i> {
+    input: &'i str,
+}
+
+impl<'de> de::Deserializer<'de> for BorrowedStringDeserializer<'de> {
+    type Error = Error;
+
+    fn deserialize_any<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+        where
+            V: Visitor<'de>,
+    {
+        visitor.visit_str(self.input)
     }
 
     forward_to_deserialize_any! {

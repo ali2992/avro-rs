@@ -7,6 +7,8 @@ use avro_rs::{
 };
 use lazy_static::lazy_static;
 use serde::Deserialize;
+use std::borrow::Cow;
+use std::borrow::Cow::{Borrowed, Owned};
 
 lazy_static! {
     static ref SCHEMAS_TO_VALIDATE: Vec<(&'static str, Value)> = vec![
@@ -186,6 +188,29 @@ fn test_unknown_struct_field() {
         ("C".to_string(), Value::Int(3)),
     ]);
     let deserialised = from_value::<PartialRecord>(&original_value).unwrap();
+
+    assert_eq!(expected, deserialised);
+}
+
+#[derive(Debug, Deserialize, Eq, PartialEq)]
+struct BorrowedRecord<'a> {
+    #[serde(rename(deserialize = "A"))]
+    a: Cow<'a, str>,
+}
+
+#[test]
+fn test_borrowed_record() {
+    let expected = BorrowedRecord { a: Cow::Owned("hello".to_string()) };
+
+    let original_value = Value::Record(vec![
+        ("A".to_string(), Value::String("hello".to_string())),
+    ]);
+    let deserialised: BorrowedRecord = from_value::<BorrowedRecord>(&original_value).unwrap();
+
+    match deserialised.a {
+        Borrowed(a) => println!("Borrowed"),
+        Owned(_) => println!("Owned")
+    }
 
     assert_eq!(expected, deserialised);
 }

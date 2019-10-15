@@ -2,29 +2,28 @@ use std::collections::HashMap;
 use std::io::Read;
 use std::mem::transmute;
 
-use failure::Error;
-
+use crate::error::{error, ErrorKind, Result};
 use crate::schema::Schema;
 use crate::types::Value;
-use crate::util::{safe_len, zag_i32, zag_i64, DecodeError};
+use crate::util::{safe_len, zag_i32, zag_i64};
 
 #[inline]
-fn decode_long<R: Read>(reader: &mut R) -> Result<Value, Error> {
+fn decode_long<R: Read>(reader: &mut R) -> Result<Value> {
     zag_i64(reader).map(Value::Long)
 }
 
 #[inline]
-fn decode_int<R: Read>(reader: &mut R) -> Result<Value, Error> {
+fn decode_int<R: Read>(reader: &mut R) -> Result<Value> {
     zag_i32(reader).map(Value::Int)
 }
 
 #[inline]
-fn decode_len<R: Read>(reader: &mut R) -> Result<usize, Error> {
+fn decode_len<R: Read>(reader: &mut R) -> Result<usize> {
     zag_i64(reader).and_then(|len| safe_len(len as usize))
 }
 
 /// Decode a `Value` from avro format given its `Schema`.
-pub fn decode<R: Read>(schema: &Schema, reader: &mut R) -> Result<Value, Error> {
+pub fn decode<R: Read>(schema: &Schema, reader: &mut R) -> Result<Value> {
     match *schema {
         Schema::Null => Ok(Value::Null),
         Schema::Boolean => {
@@ -34,7 +33,7 @@ pub fn decode<R: Read>(schema: &Schema, reader: &mut R) -> Result<Value, Error> 
             match buf[0] {
                 0u8 => Ok(Value::Boolean(false)),
                 1u8 => Ok(Value::Boolean(true)),
-                _ => Err(DecodeError::new("not a bool").into()),
+                _ => Err(error(ErrorKind::Decode("not a bool".to_string()))),
             }
         }
         Schema::Int => decode_int(reader),
@@ -60,15 +59,15 @@ pub fn decode<R: Read>(schema: &Schema, reader: &mut R) -> Result<Value, Error> 
         }
         Schema::String => {
             let len = decode_len(reader)?;
-            let mut buf = Vec::with_capacity(len);
+
+            let mut buf =  Vec::with_capacity(len);
             unsafe {
                 buf.set_len(len);
             }
+
             reader.read_exact(&mut buf)?;
 
-            String::from_utf8(buf)
-                .map(Value::String)
-                .map_err(|_| DecodeError::new("not a valid utf-8 string").into())
+            unsafe { Ok(Value::String(String::from_utf8_unchecked(buf))) }
         }
         Schema::Fixed { size, .. } => {
             let mut buf = vec![0u8; size as usize];
@@ -111,7 +110,7 @@ pub fn decode<R: Read>(schema: &Schema, reader: &mut R) -> Result<Value, Error> 
                         let value = decode(inner, reader)?;
                         items.insert(key, value);
                     } else {
-                        return Err(DecodeError::new("map key is not a string").into());
+                        return Err(error(ErrorKind::Decode("map key is not a string".to_string())));
                     }
                 }
             }
@@ -123,7 +122,7 @@ pub fn decode<R: Read>(schema: &Schema, reader: &mut R) -> Result<Value, Error> 
             let variants = inner.variants();
             match variants.get(index as usize) {
                 Some(variant) => decode(variant, reader).map(|x| Value::Union(index, Box::new(x))),
-                None => Err(DecodeError::new("Union index out of bounds").into()),
+                None => Err(error(ErrorKind::Decode("Union index out of bounds".to_string()))),
             }
         }
         Schema::Record { ref fields, .. } => {
@@ -146,10 +145,10 @@ pub fn decode<R: Read>(schema: &Schema, reader: &mut R) -> Result<Value, Error> 
                     let symbol = symbols[index as usize].clone();
                     Ok(Value::Enum(index, symbol))
                 } else {
-                    Err(DecodeError::new("enum symbol index out of bounds").into())
+                    Err(error(ErrorKind::Decode("enum symbol index out of bounds".to_string())))
                 }
             } else {
-                Err(DecodeError::new("enum symbol not found").into())
+                Err(error(ErrorKind::Decode("enum symbol not found".to_string())))
             }
         }
     }

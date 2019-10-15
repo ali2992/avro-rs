@@ -1,8 +1,6 @@
 //! Logic handling writing in Avro format at user level.
 use std::collections::HashMap;
 use std::io::Write;
-
-use failure::{Error, Fail};
 use rand::random;
 use serde::Serialize;
 use serde_json;
@@ -12,6 +10,7 @@ use crate::schema::Schema;
 use crate::ser::Serializer;
 use crate::types::{ToAvro, Value};
 use crate::Codec;
+use crate::error::{error, Result, ErrorKind};
 
 const SYNC_SIZE: usize = 16;
 const SYNC_INTERVAL: usize = 1000 * SYNC_SIZE; // TODO: parametrize in Writer
@@ -19,8 +18,7 @@ const SYNC_INTERVAL: usize = 1000 * SYNC_SIZE; // TODO: parametrize in Writer
 const AVRO_OBJECT_HEADER: &[u8] = &[b'O', b'b', b'j', 1u8];
 
 /// Describes errors happened while validating Avro data.
-#[derive(Fail, Debug)]
-#[fail(display = "Validation error: {}", _0)]
+#[derive(Display, Debug)]
 pub struct ValidationError(String);
 
 impl ValidationError {
@@ -85,7 +83,7 @@ impl<'a, W: Write> Writer<'a, W> {
     /// **NOTE** This function is not guaranteed to perform any actual write, since it relies on
     /// internal buffering for performance reasons. If you want to be sure the value has been
     /// written, then call [`flush`](struct.Writer.html#method.flush).
-    pub fn append<T: ToAvro>(&mut self, value: T) -> Result<usize, Error> {
+    pub fn append<T: ToAvro>(&mut self, value: T) -> Result<usize> {
         let n = if !self.has_header {
             let header = self.header()?;
             let n = self.append_bytes(header.as_ref())?;
@@ -114,7 +112,7 @@ impl<'a, W: Write> Writer<'a, W> {
     /// **NOTE** This function is not guaranteed to perform any actual write, since it relies on
     /// internal buffering for performance reasons. If you want to be sure the value has been
     /// written, then call [`flush`](struct.Writer.html#method.flush).
-    pub fn append_value_ref(&mut self, value: &Value) -> Result<usize, Error> {
+    pub fn append_value_ref(&mut self, value: &Value) -> Result<usize> {
         let n = if !self.has_header {
             let header = self.header()?;
             let n = self.append_bytes(header.as_ref())?;
@@ -144,7 +142,7 @@ impl<'a, W: Write> Writer<'a, W> {
     /// **NOTE** This function is not guaranteed to perform any actual write, since it relies on
     /// internal buffering for performance reasons. If you want to be sure the value has been
     /// written, then call [`flush`](struct.Writer.html#method.flush).
-    pub fn append_ser<S: Serialize>(&mut self, value: S) -> Result<usize, Error> {
+    pub fn append_ser<S: Serialize>(&mut self, value: S) -> Result<usize> {
         let avro_value = value.serialize(&mut self.serializer)?;
         self.append(avro_value)
     }
@@ -156,7 +154,7 @@ impl<'a, W: Write> Writer<'a, W> {
     ///
     /// **NOTE** This function forces the written data to be flushed (an implicit
     /// call to [`flush`](struct.Writer.html#method.flush) is performed).
-    pub fn extend<I, T: ToAvro>(&mut self, values: I) -> Result<usize, Error>
+    pub fn extend<I, T: ToAvro>(&mut self, values: I) -> Result<usize>
     where
         I: IntoIterator<Item = T>,
     {
@@ -191,7 +189,7 @@ impl<'a, W: Write> Writer<'a, W> {
     ///
     /// **NOTE** This function forces the written data to be flushed (an implicit
     /// call to [`flush`](struct.Writer.html#method.flush) is performed).
-    pub fn extend_ser<I, T: Serialize>(&mut self, values: I) -> Result<usize, Error>
+    pub fn extend_ser<I, T: Serialize>(&mut self, values: I) -> Result<usize>
     where
         I: IntoIterator<Item = T>,
     {
@@ -225,7 +223,7 @@ impl<'a, W: Write> Writer<'a, W> {
     ///
     /// **NOTE** This function forces the written data to be flushed (an implicit
     /// call to [`flush`](struct.Writer.html#method.flush) is performed).
-    pub fn extend_from_slice(&mut self, values: &[Value]) -> Result<usize, Error> {
+    pub fn extend_from_slice(&mut self, values: &[Value]) -> Result<usize> {
         let mut num_bytes = 0;
         for value in values {
             num_bytes += self.append_value_ref(value)?;
@@ -239,7 +237,7 @@ impl<'a, W: Write> Writer<'a, W> {
     /// has been written before releasing the `Writer`.
     ///
     /// Return the number of bytes written.
-    pub fn flush(&mut self) -> Result<usize, Error> {
+    pub fn flush(&mut self) -> Result<usize> {
         if self.num_values == 0 {
             return Ok(0);
         }
@@ -269,24 +267,24 @@ impl<'a, W: Write> Writer<'a, W> {
     }
 
     /// Generate and append synchronization marker to the payload.
-    fn append_marker(&mut self) -> Result<usize, Error> {
+    fn append_marker(&mut self) -> Result<usize> {
         // using .writer.write directly to avoid mutable borrow of self
         // with ref borrowing of self.marker
         Ok(self.writer.write(&self.marker)?)
     }
 
     /// Append a raw Avro Value to the payload avoiding to encode it again.
-    fn append_raw(&mut self, value: &Value, schema: &Schema) -> Result<usize, Error> {
+    fn append_raw(&mut self, value: &Value, schema: &Schema) -> Result<usize> {
         self.append_bytes(encode_to_vec(&value, schema).as_ref())
     }
 
     /// Append pure bytes to the payload.
-    fn append_bytes(&mut self, bytes: &[u8]) -> Result<usize, Error> {
+    fn append_bytes(&mut self, bytes: &[u8]) -> Result<usize> {
         Ok(self.writer.write(bytes)?)
     }
 
     /// Create an Avro header based on schema, codec and sync marker.
-    fn header(&self) -> Result<Vec<u8>, Error> {
+    fn header(&self) -> Result<Vec<u8>> {
         let schema_bytes = serde_json::to_string(self.schema)?.into_bytes();
 
         let mut metadata = HashMap::with_capacity(2);
@@ -315,18 +313,18 @@ fn write_avro_datum<T: ToAvro>(
     schema: &Schema,
     value: T,
     buffer: &mut Vec<u8>,
-) -> Result<(), Error> {
+) -> Result<()> {
     let avro = value.avro();
     if !avro.validate(schema) {
-        return Err(ValidationError::new("value does not match schema").into());
+        return Err(error(ErrorKind::Validation("value does not match schema".to_string())));
     }
     encode(&avro, schema, buffer);
     Ok(())
 }
 
-fn write_value_ref(schema: &Schema, value: &Value, buffer: &mut Vec<u8>) -> Result<(), Error> {
+fn write_value_ref(schema: &Schema, value: &Value, buffer: &mut Vec<u8>) -> Result<()> {
     if !value.validate(schema) {
-        return Err(ValidationError::new("value does not match schema").into());
+        return Err(error(ErrorKind::Validation("value does not match schema".to_string())));
     }
     encode_ref(value, schema, buffer);
     Ok(())
@@ -338,7 +336,7 @@ fn write_value_ref(schema: &Schema, value: &Value, buffer: &mut Vec<u8>) -> Resu
 /// **NOTE** This function has a quite small niche of usage and does NOT generate headers and sync
 /// markers; use [`Writer`](struct.Writer.html) to be fully Avro-compatible if you don't know what
 /// you are doing, instead.
-pub fn to_avro_datum<T: ToAvro>(schema: &Schema, value: T) -> Result<Vec<u8>, Error> {
+pub fn to_avro_datum<T: ToAvro>(schema: &Schema, value: T) -> Result<Vec<u8>> {
     let mut buffer = Vec::new();
     write_avro_datum(schema, value, &mut buffer)?;
     Ok(buffer)

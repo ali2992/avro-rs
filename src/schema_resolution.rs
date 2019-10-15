@@ -1,64 +1,28 @@
 use std::collections::HashMap;
+use std::rc::Rc;
 
 use crate::schema::Name as RecordName;
 use crate::schema::RecordField;
 use crate::types::Value;
 use crate::Schema;
+use crate::error::{ErrorKind, error, ResolutionError, Result, Error};
 use serde_json::Value as JsonValue;
-
-#[derive(Fail, Debug, Clone, PartialEq)]
-pub enum ResolutionError {
-    #[fail(display = "ResolutionError::BytesToStringUtf8Error")]
-    BytesToStringUtf8Error,
-
-    #[fail(
-        display = "ResolutionError::IncompatibleSchema: writer={:?}, reader={:?}",
-        _0, _1
-    )]
-    IncompatibleSchema(Schema, Schema),
-
-    #[fail(display = "ResolutionError::IncompatibleData: data={:?}", _0)]
-    IncompatibleData(Value),
-
-    #[fail(display = "ResolutionError::UnexpectedVariant: variant={}", _0)]
-    UnexpectedVariant(usize),
-
-    #[fail(
-        display = "ResolutionError::RecordFieldMissing: record={:?}, field={}",
-        _0, _1
-    )]
-    RecordFieldMissing(RecordName, usize),
-
-    #[fail(display = "ResolutionError::RecordFieldValueMissing: {}", _0)]
-    RecordFieldValueMissing(String),
-
-    #[fail(display = "ResolutionError::InvalidDefaultValue: {:?}", _0)]
-    InvalidDefaultValue(JsonValue),
-
-    #[fail(display = "ResolutionError::Generic: {}", _0)]
-    Generic(String),
-}
 
 #[derive(Debug, Clone)]
 pub enum RecordFieldResolution {
     Present {
         w_pos: usize,
         r_pos: usize,
-        name: String,
+        name: Rc<String>,
         resolution: Resolution,
     },
 
     Absent {
         r_pos: usize,
-        name: String,
+        name: Rc<String>,
         value: Value,
     },
 }
-// pub struct RecordFieldResolution {
-//     from_pos: usize,
-//     to_pos: usize,
-//     value: Resolution,
-// }
 
 #[derive(Debug, Clone)]
 pub enum Resolution {
@@ -77,24 +41,14 @@ pub enum Resolution {
     UnionVariant(usize, Box<Resolution>),
     UnionChoice(Vec<Resolution>),
     EnumChoice(HashMap<i32, (i32, String)>),
-    Failure(ResolutionError),
-}
-
-impl From<std::string::FromUtf8Error> for ResolutionError {
-    fn from(_: std::string::FromUtf8Error) -> ResolutionError {
-        ResolutionError::BytesToStringUtf8Error
-    }
+    Failure(Error), //TODO why is this a thing?
 }
 
 impl Resolution {
-    // pub fn id() -> Resolution {
-    //     Resolution::Identity
-    // }
-
     pub fn new(
         writer_schema: &Schema,
         reader_schema: &Schema,
-    ) -> Result<Resolution, ResolutionError> {
+    ) -> Result<Resolution> {
         if writer_schema == reader_schema {
             Ok(Resolution::Identity)
         } else {
@@ -209,10 +163,10 @@ impl Resolution {
                         })
                         .map(|resolution| Ok(resolution))
                         .unwrap_or_else(|| {
-                            Err(ResolutionError::IncompatibleSchema(
+                            Err(error(ErrorKind::Resolution(ResolutionError::IncompatibleSchema(
                                 w_non_union.clone(),
-                                Schema::Union(r_union_schema.clone()),
-                            ))
+                                Schema::Union(r_union_schema.clone())
+                            ))))
                         })
                 }
 
@@ -256,7 +210,7 @@ impl Resolution {
                         .map(|(r_pos, r_field)| {
                             assert_eq!(r_pos, r_field.position);
 
-                            let w_pos_opt: Option<&usize> = w_lookup.get(&r_field.name);
+                            let w_pos_opt: Option<&usize> = w_lookup.get(r_field.name.as_ref());
 
                             let w_pos_and_field_opt: Option<(usize, RecordField)> =
                                 w_pos_opt.map(|w_pos| {
@@ -265,9 +219,7 @@ impl Resolution {
                                     (*w_pos, w_fields[*w_pos].clone())
                                 });
 
-                            let field_present_result_opt: Option<
-                                Result<RecordFieldResolution, ResolutionError>,
-                            > = w_pos_and_field_opt.map(|(w_pos, w_field)| {
+                            let field_present_result_opt: Option<Result<RecordFieldResolution>> = w_pos_and_field_opt.map(|(w_pos, w_field)| {
                                 Self::new(&w_field.schema, &r_field.schema).map(|resolution| {
                                     RecordFieldResolution::Present {
                                         w_pos,
@@ -278,12 +230,12 @@ impl Resolution {
                                 })
                             });
 
-                            let field_result: Result<RecordFieldResolution, ResolutionError> =
+                            let field_result: Result<RecordFieldResolution> =
                                 field_present_result_opt.unwrap_or_else(|| match r_field.default {
-                                    None => Err(ResolutionError::RecordFieldMissing(
+                                    None => Err(error(ErrorKind::Resolution(ResolutionError::RecordFieldMissing(
                                         r_name.clone(),
                                         r_pos,
-                                    )),
+                                    )))),
                                     Some(ref default_value_json) => {
                                         Self::value_from_json(&r_field.schema, default_value_json)
                                             .map(|default_value| RecordFieldResolution::Absent {
@@ -296,19 +248,19 @@ impl Resolution {
 
                             field_result
                         })
-                        .collect::<Result<_, _>>()
+                        .collect::<Result<_>>()
                         .map(|field_resolutions| Resolution::Record(field_resolutions))
                 }
 
-                (writer_schema, reader_schema) => Err(ResolutionError::IncompatibleSchema(
+                (writer_schema, reader_schema) => Err(error(ErrorKind::Resolution(ResolutionError::IncompatibleSchema(
                     writer_schema.clone(),
                     reader_schema.clone(),
-                )),
+                )))),
             }
         }
     }
 
-    pub fn promote_value(&self, value: Value) -> Result<Value, ResolutionError> {
+    pub fn promote_value(&self, value: Value) -> Result<Value> {
         match (self.clone(), value) {
             (Resolution::Failure(reason), _) => Err(reason),
             (Resolution::Identity, as_is) => Ok(as_is),
@@ -333,18 +285,18 @@ impl Resolution {
             (Resolution::Array(inner), Value::Array(vs)) => vs
                 .into_iter()
                 .map(|v| inner.promote_value(v))
-                .collect::<Result<_, _>>()
+                .collect::<Result<_>>()
                 .map(|vs| Value::Array(vs)),
 
             (Resolution::Map(inner), Value::Map(vs_map)) => vs_map
                 .into_iter()
                 .map(|(k, v)| inner.promote_value(v).map(|v| (k, v)))
-                .collect::<Result<Vec<_>, _>>()
+                .collect::<Result<Vec<_>>>()
                 .map(|pairs| pairs.into_iter().collect::<HashMap<_, _>>())
                 .map(|vs_map| Value::Map(vs_map)),
 
             (Resolution::Record(resolutions), Value::Record(w_fields)) => {
-                let mut w_field_map = w_fields.into_iter().collect::<HashMap<_, _>>();
+                let mut w_field_map = w_fields.into_iter().map(|(k, v)| ((*k).clone(), v)).collect::<HashMap<_, _>>();
 
                 resolutions
                     .into_iter()
@@ -353,12 +305,12 @@ impl Resolution {
                         RecordFieldResolution::Present {
                             name, resolution, ..
                         } => w_field_map
-                            .remove(&name)
-                            .ok_or(ResolutionError::RecordFieldValueMissing(name.clone()))
+                            .remove(name.as_ref())
+                            .ok_or(error(ErrorKind::Resolution(ResolutionError::RecordFieldValueMissing(name.clone()))))
                             .and_then(|w_value| resolution.promote_value(w_value))
                             .map(|promoted_value| (name, promoted_value)),
                     })
-                    .collect::<Result<Vec<(String, Value)>, ResolutionError>>()
+                    .collect::<Result<Vec<(Rc<String>, Value)>>>()
                     .map(|fields| Value::Record(fields))
             }
 
@@ -366,25 +318,25 @@ impl Resolution {
                 .get(&w_idx)
                 .map(|(r_idx, r_symbol)| Ok(Value::Enum(*r_idx, r_symbol.clone())))
                 .unwrap_or_else(|| {
-                    Err(ResolutionError::IncompatibleData(Value::Enum(
+                    Err(error(ErrorKind::Resolution(ResolutionError::IncompatibleData(Value::Enum(
                         w_idx, w_symbol,
-                    )))
+                    )))))
                 }),
 
             (Resolution::UnionChoice(variants), Value::Union(idx, value)) => variants
                 .get(idx)
                 .map(|resolution| resolution.promote_value(*value))
-                .unwrap_or_else(|| Err(ResolutionError::UnexpectedVariant(idx))),
+                .unwrap_or_else(|| Err(error(ErrorKind::Resolution(ResolutionError::UnexpectedVariant(idx))))),
 
             (Resolution::UnionVariant(idx, inner), value) => inner
                 .promote_value(value)
                 .map(|promoted_inner| Value::Union(idx, Box::new(promoted_inner))),
 
-            (_resolution, data) => Err(ResolutionError::IncompatibleData(data)),
+            (_resolution, data) => Err(error(ErrorKind::Resolution(ResolutionError::IncompatibleData(data)))),
         }
     }
 
-    fn value_from_json(schema: &Schema, value: &JsonValue) -> Result<Value, ResolutionError> {
+    fn value_from_json(schema: &Schema, value: &JsonValue) -> Result<Value> {
         // Calling .avro() here does not work terribly well for 'int' — it is conservatively cast into Value::Long(_)
         // Target field schema should be regarded to choose the exact Avro-type.
         // Illustrated in `schema_resolution::test_resolve_and_promote_record_with_default_int`
@@ -408,7 +360,7 @@ impl Resolution {
             (Schema::Array(inner), JsonValue::Array(vs)) => vs
                 .iter()
                 .map(|v| Self::value_from_json(inner, v))
-                .collect::<Result<_, _>>()
+                .collect::<Result<_>>()
                 .map(|vs| Value::Array(vs)),
             (Schema::Enum { symbols, .. }, JsonValue::String(v)) => symbols
                 .iter()
@@ -421,9 +373,9 @@ impl Resolution {
                     }
                 })
                 .unwrap_or_else(|| {
-                    Err(ResolutionError::InvalidDefaultValue(JsonValue::String(
+                    Err(error(ErrorKind::Resolution(ResolutionError::InvalidDefaultValue(JsonValue::String(
                         v.to_owned(),
-                    )))
+                    )))))
                 }),
             (
                 Schema::Record {
@@ -441,19 +393,17 @@ impl Resolution {
                         lookup
                             .get(k)
                             .map(|p| Self::value_from_json(&fields[*p].schema, v))
-                            .unwrap_or(Err(ResolutionError::RecordFieldValueMissing(
-                                k.to_string(),
-                            ))),
+                            .unwrap_or(Err(error(ErrorKind::Resolution(ResolutionError::RecordFieldValueMissing(Rc::new(k.to_string())))))),
                     )
                 })
                 .fold(Ok(vec![]), |mut v, r| match &r.1 {
                     Ok(x) => {
                         v.as_mut()
-                            .map(|v| v.push((r.0.clone(), x.to_owned())))
+                            .map(|v| v.push((Rc::new(r.0.to_string()), x.to_owned())))
                             .expect("No accumulator!");
                         v
                     }
-                    Err(e) => Err(e.to_owned()),
+                    Err(e) => Err(e.to_owned()), //TODO why to_owned?
                 })
                 .map(|f| Value::Record(f)),
             (Schema::Map(inner), JsonValue::Object(vs)) => vs
@@ -469,7 +419,7 @@ impl Resolution {
                     Err(e) => Err(e.to_owned()),
                 })
                 .map(|m| Value::Map(m)),
-            (_, _) => Err(ResolutionError::InvalidDefaultValue(value.clone())),
+            (_, _) => Err(error(ErrorKind::Resolution(ResolutionError::InvalidDefaultValue(value.clone())))),
         }
     }
 }
@@ -483,13 +433,13 @@ mod tests {
         reader_schema: &Schema,
         original_value: Value,
         expected_adjusted_value: Value,
-    ) -> Result<(), ResolutionError> {
+    ) -> Result<()> {
         let resolution = Resolution::new(writer_schema, reader_schema)?;
         let adjusted_value = resolution.promote_value(original_value)?;
         if adjusted_value != expected_adjusted_value {
-            Err(ResolutionError::Generic(
+            Err(error(ErrorKind::Resolution(ResolutionError::Generic(
                 format!("{:?} != {:?}", adjusted_value, expected_adjusted_value).into(),
-            ))
+            ))))
         } else {
             Ok(())
         }
@@ -702,12 +652,12 @@ mod tests {
         )
         .unwrap();
         let w_record = Value::Record(vec![
-            ("a_number_no_default".to_owned(), Value::Int(13)),
-            ("a_number_obsolete".to_owned(), Value::Int(-1)),
+            (Rc::new("a_number_no_default".to_owned()), Value::Int(13)),
+            (Rc::new("a_number_obsolete".to_owned()), Value::Int(-1)),
         ]);
         let r_record = Value::Record(vec![
-            ("a_number_no_default".to_owned(), Value::Long(13)),
-            ("a_number_with_default".to_owned(), Value::Long(42)),
+            (Rc::new("a_number_no_default".to_owned()), Value::Long(13)),
+            (Rc::new("a_number_with_default".to_owned()), Value::Long(42)),
         ]);
         resolve_and_promote_single(&w_schema, &w_schema, w_record.clone(), w_record.clone())
             .unwrap();
@@ -740,7 +690,7 @@ mod tests {
         )
         .unwrap();
         let w_data = Value::Record(vec![]);
-        let r_data = Value::Record(vec![("a_field".to_owned(), Value::Int(42))]);
+        let r_data = Value::Record(vec![(Rc::new("a_field".to_owned()), Value::Int(42))]);
         resolve_and_promote_single(&w_schema, &w_schema, w_data.clone(), w_data.clone()).unwrap();
         resolve_and_promote_single(&w_schema, &r_schema, w_data.clone(), r_data.clone()).unwrap();
     }
@@ -782,12 +732,12 @@ mod tests {
         "#,
         )
         .unwrap();
-        let w_data = Value::Record(vec![("a_field".to_owned(), Value::Long(13))]);
+        let w_data = Value::Record(vec![(Rc::new("a_field".to_owned()), Value::Long(13))]);
         let r_data = Value::Union(
             2,
             Box::new(Value::Record(vec![
-                ("a_field".to_owned(), Value::Long(13)),
-                ("an_optional_field".to_owned(), Value::Long(42)),
+                (Rc::new("a_field".to_owned()), Value::Long(13)),
+                (Rc::new("an_optional_field".to_owned()), Value::Long(42)),
             ])),
         );
 
@@ -834,18 +784,18 @@ mod tests {
 
         let w_data_ok = Value::Union(
             2,
-            Box::new(Value::Record(vec![("a_field".to_owned(), Value::Long(42))])),
+            Box::new(Value::Record(vec![(Rc::new("a_field".to_owned()), Value::Long(42))])),
         );
 
         let w_data_err = Value::Union(
             1,
             Box::new(Value::Record(vec![(
-                "an_optional_field".to_owned(),
+                Rc::new("an_optional_field".to_owned()),
                 Value::Long(1),
             )])),
         );
 
-        let r_data_ok = Value::Record(vec![("a_field".to_owned(), Value::Long(42))]);
+        let r_data_ok = Value::Record(vec![(Rc::new("a_field".to_owned()), Value::Long(42))]);
 
         resolve_and_promote_single(&w_schema, &w_schema, w_data_ok.clone(), w_data_ok.clone())
             .unwrap();

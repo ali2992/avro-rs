@@ -464,9 +464,11 @@
 //!     Ok(())
 //! }
 //! ```
+//!
+
 
 #[macro_use]
-extern crate failure;
+extern crate derive_more;
 
 mod codec;
 mod de;
@@ -477,6 +479,7 @@ mod schema_resolution;
 mod ser;
 mod util;
 mod writer;
+mod error;
 
 pub mod schema;
 pub mod types;
@@ -484,12 +487,11 @@ pub mod types;
 pub use crate::codec::Codec;
 pub use crate::de::from_value;
 pub use crate::reader::{from_avro_datum, Reader};
-pub use crate::schema::{ParseSchemaError, Schema};
+pub use crate::schema::Schema;
 pub use crate::schema_resolution::Resolution as SchemaResolution;
-pub use crate::schema_resolution::ResolutionError as SchemaResolutionError;
 pub use crate::ser::to_value;
-pub use crate::util::{max_allocation_bytes, DecodeError};
-pub use crate::writer::{to_avro_datum, ValidationError, Writer};
+pub use crate::util::max_allocation_bytes;
+pub use crate::writer::{to_avro_datum, Writer};
 
 #[cfg(test)]
 mod tests {
@@ -497,6 +499,7 @@ mod tests {
     use crate::reader::Reader;
     use crate::schema::Schema;
     use crate::types::{Record, Value};
+    use std::rc::Rc;
 
     //TODO: move where it fits better
     #[test]
@@ -543,9 +546,9 @@ mod tests {
         assert_eq!(
             reader.next().unwrap().unwrap(),
             Value::Record(vec![
-                ("a".to_string(), Value::Long(27)),
-                ("b".to_string(), Value::String("foo".to_string())),
-                ("c".to_string(), Value::Enum(1, "spades".to_string())),
+                (Rc::new("a".to_string()), Value::Long(27)),
+                (Rc::new("b".to_string()), Value::String("foo".to_string())),
+                (Rc::new("c".to_string()), Value::Enum(1, "spades".to_string())),
             ])
         );
         assert!(reader.next().is_none());
@@ -586,9 +589,9 @@ mod tests {
         assert_eq!(
             reader.next().unwrap().unwrap(),
             Value::Record(vec![
-                ("a".to_string(), Value::Long(27)),
-                ("b".to_string(), Value::String("foo".to_string())),
-                ("c".to_string(), Value::Enum(2, "clubs".to_string())),
+                (Rc::new("a".to_string()), Value::Long(27)),
+                (Rc::new("b".to_string()), Value::String("foo".to_string())),
+                (Rc::new("c".to_string()), Value::Enum(2, "clubs".to_string())),
             ])
         );
         assert!(reader.next().is_none());
@@ -685,9 +688,9 @@ mod tests {
         assert_eq!(
             reader.next().unwrap().unwrap(),
             Value::Record(vec![
-                ("a".to_string(), Value::Long(27)),
-                ("b".to_string(), Value::String("foo".to_string())),
-                ("c".to_string(), Value::Enum(2, "clubs".to_string())),
+                (Rc::new("a".to_string()), Value::Long(27)),
+                (Rc::new("b".to_string()), Value::String("foo".to_string())),
+                (Rc::new("c".to_string()), Value::Enum(2, "clubs".to_string())),
             ])
         );
     }

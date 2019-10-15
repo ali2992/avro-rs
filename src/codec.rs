@@ -6,11 +6,10 @@ use std::str::FromStr;
 use byteorder;
 #[cfg(feature = "snappy")]
 use crc;
-use failure::Error;
 use libflate::deflate::{Decoder, Encoder};
 
 use crate::types::{ToAvro, Value};
-use crate::util::DecodeError;
+use crate::error::{Error, error, ErrorKind, Result};
 
 /// The compression codec used to compress blocks.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -44,22 +43,22 @@ impl ToAvro for Codec {
 }
 
 impl FromStr for Codec {
-    type Err = DecodeError;
+    type Err = Error;
 
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
+    fn from_str(s: &str) -> Result<Self> {
         match s {
             "null" => Ok(Codec::Null),
             "deflate" => Ok(Codec::Deflate),
             #[cfg(feature = "snappy")]
             "snappy" => Ok(Codec::Snappy),
-            _ => Err(DecodeError::new("unrecognized codec")),
+            _ => Err(error(ErrorKind::Decode("unrecognized codec".to_string()))),
         }
     }
 }
 
 impl Codec {
     /// Compress a stream of bytes in-place.
-    pub fn compress(&self, stream: &mut Vec<u8>) -> Result<(), Error> {
+    pub fn compress(&self, stream: &mut Vec<u8>) -> Result<()> {
         match *self {
             Codec::Null => (),
             Codec::Deflate => {
@@ -87,7 +86,7 @@ impl Codec {
     }
 
     /// Decompress a stream of bytes in-place.
-    pub fn decompress(&self, stream: &mut Vec<u8>) -> Result<(), Error> {
+    pub fn decompress(&self, stream: &mut Vec<u8>) -> Result<()> {
         match *self {
             Codec::Null => (),
             Codec::Deflate => {
@@ -111,11 +110,11 @@ impl Codec {
                 let actual_crc = crc::crc32::checksum_ieee(&decoded);
 
                 if expected_crc != actual_crc {
-                    return Err(DecodeError::new(format!(
+                    return Err(error(ErrorKind::Decode(format!(
                         "bad Snappy CRC32; expected {:x} but got {:x}",
                         expected_crc, actual_crc
                     ))
-                    .into());
+                    .into()));
                 }
                 *stream = decoded;
             }

@@ -2,11 +2,12 @@
 use std::collections::HashMap;
 use std::hash::BuildHasher;
 use std::u8;
+use std::rc::Rc;
 
 use crate::schema::Schema;
 use crate::schema_resolution;
-use failure::Error;
 use serde_json::Value as JsonValue;
+use crate::error::{Result};
 
 /// Represents any valid Avro value
 /// More information about Avro values can be found in the
@@ -51,7 +52,7 @@ pub enum Value {
     /// This allows schema-less encoding.
     ///
     /// See [Record](types.Record) for a more user-friendly support.
-    Record(Vec<(String, Value)>),
+    Record(Vec<(Rc<String>, Value)>),
 }
 
 /// Any structure implementing the [ToAvro](trait.ToAvro.html) trait will be usable
@@ -170,7 +171,7 @@ pub struct Record<'a> {
     /// List of fields contained in the record.
     /// Ordered according to the fields in the schema given to create this
     /// `Record` object. Any unset field defaults to `Value::Null`.
-    pub fields: Vec<(String, Value)>,
+    pub fields: Vec<(Rc<String>, Value)>,
     schema_lookup: &'a HashMap<String, usize>,
 }
 
@@ -302,7 +303,7 @@ impl Value {
         self,
         writer_schema: &Schema,
         reader_schema: &Schema,
-    ) -> Result<Self, Error> {
+    ) -> Result<Self> {
         let resolution = schema_resolution::Resolution::new(writer_schema, reader_schema)?;
         let promoted_value = resolution.promote_value(self)?;
 
@@ -424,7 +425,7 @@ mod tests {
             doc: None,
             fields: vec![
                 RecordField {
-                    name: "a".to_string(),
+                    name: Rc::new("a".to_string()),
                     doc: None,
                     default: None,
                     schema: Schema::Long,
@@ -432,7 +433,7 @@ mod tests {
                     position: 0,
                 },
                 RecordField {
-                    name: "b".to_string(),
+                    name: Rc::new("b".to_string()),
                     doc: None,
                     default: None,
                     schema: Schema::String,
@@ -444,33 +445,33 @@ mod tests {
         };
 
         assert!(Value::Record(vec![
-            ("a".to_string(), Value::Long(42i64)),
-            ("b".to_string(), Value::String("foo".to_string())),
+            (Rc::new("a".to_string()), Value::Long(42i64)),
+            (Rc::new("b".to_string()), Value::String("foo".to_string())),
         ])
         .validate(&schema));
 
         assert!(!Value::Record(vec![
-            ("b".to_string(), Value::String("foo".to_string())),
-            ("a".to_string(), Value::Long(42i64)),
+            (Rc::new("b".to_string()), Value::String("foo".to_string())),
+            (Rc::new("a".to_string()), Value::Long(42i64)),
         ])
         .validate(&schema));
 
         assert!(!Value::Record(vec![
-            ("a".to_string(), Value::Boolean(false)),
-            ("b".to_string(), Value::String("foo".to_string())),
+            (Rc::new("a".to_string()), Value::Boolean(false)),
+            (Rc::new("b".to_string()), Value::String("foo".to_string())),
         ])
         .validate(&schema));
 
         assert!(!Value::Record(vec![
-            ("a".to_string(), Value::Long(42i64)),
-            ("c".to_string(), Value::String("foo".to_string())),
+            (Rc::new("a".to_string()), Value::Long(42i64)),
+            (Rc::new("c".to_string()), Value::String("foo".to_string())),
         ])
         .validate(&schema));
 
         assert!(!Value::Record(vec![
-            ("a".to_string(), Value::Long(42i64)),
-            ("b".to_string(), Value::String("foo".to_string())),
-            ("c".to_string(), Value::Null),
+            (Rc::new("a".to_string()), Value::Long(42i64)),
+            (Rc::new("b".to_string()), Value::String("foo".to_string())),
+            (Rc::new("c".to_string()), Value::Null),
         ])
         .validate(&schema));
     }
